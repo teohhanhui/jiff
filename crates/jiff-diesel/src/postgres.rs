@@ -24,6 +24,28 @@ static POSTGRES_EPOCH_TIMESTAMP: i64 = 946684800;
 static MIDNIGHT: civil::Time = civil::Time::midnight();
 static UTC: tz::TimeZone = tz::TimeZone::UTC;
 
+impl ToSql<sql_types::Timestamp, Pg> for Timestamp {
+    fn to_sql<'b>(
+        &'b self,
+        out: &mut Output<'b, '_, Pg>,
+    ) -> serialize::Result {
+        // The encoding is the number of *microseconds* since
+        // POSTGRES_EPOCH_DATETIME.
+        // OK because the timestamp is known to be valid and in range.
+        let epoch =
+            jiff::Timestamp::from_second(POSTGRES_EPOCH_TIMESTAMP).unwrap();
+        let micros =
+            self.to_jiff().duration_since(epoch).as_micros();
+        // OK because the maximum duration between two Jiff timestamps
+        // is 631,107,230,401,999,999, which is less than i64::MAX.
+        let micros = i64::try_from(micros).unwrap();
+        ToSql::<sql_types::Timestamp, Pg>::to_sql(
+            &PgTimestamp(micros),
+            &mut out.reborrow(),
+        )
+    }
+}
+
 impl ToSql<sql_types::Timestamptz, Pg> for Timestamp {
     fn to_sql<'b>(
         &'b self,
@@ -33,6 +55,20 @@ impl ToSql<sql_types::Timestamptz, Pg> for Timestamp {
         // time. But the assumption is that the civil time is in UTC.
         let dt = UTC.to_datetime(self.to_jiff()).to_diesel();
         ToSql::<sql_types::Timestamp, Pg>::to_sql(&dt, &mut out.reborrow())
+    }
+}
+
+impl FromSql<sql_types::Timestamp, Pg> for Timestamp {
+    fn from_sql(bytes: PgValue<'_>) -> deserialize::Result<Timestamp> {
+        // The encoding is the number of *microseconds* since
+        // POSTGRES_EPOCH_DATETIME.
+        let PgTimestamp(micros) =
+            FromSql::<sql_types::Timestamp, Pg>::from_sql(bytes)?;
+        let micros = jiff::SignedDuration::from_micros(micros);
+        // OK because the timestamp is known to be valid and in range.
+        let epoch =
+            jiff::Timestamp::from_second(POSTGRES_EPOCH_TIMESTAMP).unwrap();
+        Ok(epoch.checked_add(micros)?.to_diesel())
     }
 }
 
